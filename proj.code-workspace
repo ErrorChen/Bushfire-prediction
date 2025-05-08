@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"name": "Bushfire-prediction",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
