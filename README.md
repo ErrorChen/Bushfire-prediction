@@ -1,8 +1,7 @@
 # Bushfire-prediction
 ## For USYD ENGG2112 using
    Group 23 
-   TEST
-   
+
 ## Description
 Two model type: LSTM and MLP
 Two class: Environment and Weather
