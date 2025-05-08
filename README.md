@@ -14,7 +14,6 @@ This repository contains a Python implementation of an `MLPClassifier` for binar
 - [Project Structure](#project-structure)  
 - [Contributing](#contributing)  
 - [Licence](#licence)  
-- [Contact](#contact)  
 - [Acknowledgements](#acknowledgements)  
 
 ## Installation  
