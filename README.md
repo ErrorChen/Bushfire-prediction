@@ -1,6 +1,6 @@
 # Bushfire-prediction
 ## For USYD ENGG2112 using
-   Group 23
+   Group 23 SC/Lu
 
 ## Description
 Two model type: LSTM and MLP
