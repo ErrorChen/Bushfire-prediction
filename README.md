@@ -71,10 +71,6 @@ Bushfire-prediction/
 ## Licence  
 This project is released under the MIT Licence. See the [LICENSE](LICENSE) file for details.
 
-## Contact  
-ErrorChen (Group 23, USYD ENGG2112)  
-Email: nicholas.tse@sydney.edu.au
-
 ## Acknowledgements  
 - WeatherAUS dataset on Kaggle  
 - Scikit-learn machine learning library  
