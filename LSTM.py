@@ -21,20 +21,17 @@ def load_modis_timeseries(modis_dir='datasets'):
     files = glob.glob(os.path.join(modis_dir, 'modis_*.csv'))
     if not files:
         raise FileNotFoundError(f"No files matching 'modis_*.csv' found in {modis_dir!r}")
-
     dfs = []
     for f in files:
         df = pd.read_csv(f)
         if 'acq_date' not in df.columns:
-            print(f"Warning: 'acq_date' column missing in {f!r}, skipping.")
+            print(f"Warning: 'acq_date' missing in {f}, skipping.")
             continue
         df['acq_date'] = pd.to_datetime(df['acq_date'], errors='coerce')
         df = df.dropna(subset=['acq_date', 'brightness', 'frp'])
         dfs.append(df[['acq_date', 'brightness', 'frp']])
-
     if not dfs:
-        raise ValueError("No valid MODIS dataframes were loaded; check your CSV files for required columns.")
-
+        raise ValueError("No valid MODIS data loaded; check CSVs.")
     df_all = pd.concat(dfs, ignore_index=True)
     df_all['year_month'] = df_all['acq_date'].dt.to_period('M').dt.to_timestamp()
     ts = (
@@ -60,11 +57,7 @@ def make_dataset(df, seq_len=12, batch_size=32):
     ds = tf.data.Dataset.from_tensor_slices(data)
     ds = ds.window(seq_len + 1, shift=1, drop_remainder=True).flat_map(lambda w: w.batch(seq_len + 1))
     ds = ds.map(lambda w: (w[:-1], w[-1, 0]), num_parallel_calls=tf.data.AUTOTUNE)
-    ds = ds.shuffle(1000)
-    ds = ds.repeat()               # 保证无限循环，不会耗尽
-    ds = ds.batch(batch_size)
-    ds = ds.cache()
-    ds = ds.prefetch(tf.data.AUTOTUNE)
+    ds = ds.shuffle(1000).repeat().batch(batch_size).cache().prefetch(tf.data.AUTOTUNE)
     return ds
 
 # ----------------------------
@@ -88,23 +81,19 @@ def build_model(seq_len, nfeat):
     x = layers.Dropout(0.3)(x)
     x = layers.Dense(64, activation='relu')(x)
     x = layers.Dropout(0.2)(x)
-    out = layers.Dense(1, dtype='float32')(x)  # 强制输出为 float32 精度
-
+    out = layers.Dense(1, dtype='float32')(x)
     return Model(inputs=inp, outputs=out)
 
 # ----------------------------
 # 5. 主训练流程
 # ----------------------------
 def main():
-    # 确保 TensorBoard 日志目录及子目录是文件夹
-    if os.path.exists('logs'):
-        # 如果 logs 不是目录，则删除
-        if not os.path.isdir('logs'):
-            os.remove('logs')
-    os.makedirs('logs/train', exist_ok=True)
-    os.makedirs('logs/validation', exist_ok=True)
+    # 清理旧的 TensorBoard 日志目录
+    if os.path.exists('tensorboard_logs'):
+        tf.io.gfile.rmtree('tensorboard_logs')
+    os.makedirs('tensorboard_logs', exist_ok=True)
 
-    # 1. 加载与预处理
+    # 1. 加载数据
     df_ts = load_modis_timeseries()
     seq_len = 12
     batch_size = 16
@@ -113,10 +102,8 @@ def main():
     full_ds = make_dataset(df_ts, seq_len=seq_len, batch_size=batch_size)
     total = len(df_ts) - seq_len
     split = int(total * 0.8)
-    # 计算 steps
     steps_per_epoch = split // batch_size
     validation_steps = (total - split) // batch_size
-
     train_ds = full_ds.take(steps_per_epoch)
     val_ds   = full_ds.skip(steps_per_epoch)
 
@@ -135,7 +122,7 @@ def main():
     cb = [
         callbacks.EarlyStopping(monitor='val_mae', patience=10, restore_best_weights=True),
         callbacks.ReduceLROnPlateau(monitor='val_mae', factor=0.5, patience=5),
-        callbacks.TensorBoard(log_dir='logs'),
+        callbacks.TensorBoard(log_dir='tensorboard_logs'),
         callbacks.ModelCheckpoint('best_lstm_modis.h5', save_best_only=True)
     ]
 
@@ -152,30 +139,24 @@ def main():
 
     # 6. 加载最佳权重并评估
     model.load_weights('best_lstm_modis.h5')
-
-    # 构造测试集并预测
-    test_ds = val_ds
     preds, trues = [], []
-    for x_batch, y_batch in test_ds:
+    for x_batch, y_batch in val_ds:
         p = model.predict(x_batch)
         preds.append(p)
         trues.append(y_batch.numpy().reshape(-1,1))
     preds = np.vstack(preds)
     trues = np.vstack(trues)
 
-    # 反缩放（示例用同一 scaler）
     ys_scaler = MinMaxScaler().fit(trues)
     preds_inv = ys_scaler.inverse_transform(preds)
     trues_inv = ys_scaler.inverse_transform(trues)
 
-    # 打印前 5 个预测对比
     dates = df_ts['year_month'].iloc[split+seq_len : split+seq_len+5].dt.date
     for i, dt in enumerate(dates):
         print(f"样本 {i} ({dt}): 真实 = {trues_inv[i,0]:.0f}, 预测 = {preds_inv[i,0]:.0f}")
 
-    # 保存最终模型
     model.save('lstm_modis_final_bushfire.keras', include_optimizer=False)
-    print("Training complete. Final model saved as 'lstm_modis_final_bushfire.keras'")
+    print("Training complete. Model saved as 'lstm_modis_final_bushfire.keras'")
 
 if __name__ == '__main__':
     main()
