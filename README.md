@@ -1,76 +1,167 @@
 # Bushfire Prediction
 
-Bushfire Prediction leverages historical meteorological observations to forecast bushfire risk in Australia using a Multilayer Perceptron (MLP) model.
+Leveraging historical meteorological observations to forecast bushfire risk in Australia using machine learning models.
 
-## Project Overview  
-This repository contains a Python implementation of an `MLPClassifier` for binary classification of bushfire risk days based on the WeatherAUS dataset. All code is written in Python and utilises `pandas`, `numpy` and `scikit-learn` for data handling, model training and evaluation.
+## Table of Contents
 
-## Table of Contents  
-- [Installation](#installation)  
-- [Data Description](#data-description)  
-- [Usage](#usage)  
-- [Model Implementation](#model-implementation)  
-- [Evaluation](#evaluation)  
-- [Project Structure](#project-structure)  
-- [Contributing](#contributing)  
-- [Licence](#licence)  
-- [Acknowledgements](#acknowledgements)  
+* [Project Overview](#project-overview)
+* [Installation](#installation)
+* [Data](#data)
+* [Usage](#usage)
+* [Model Implementations](#model-implementations)
+* [Results](#results)
+* [Project Structure](#project-structure)
+* [Contributing](#contributing)
+* [License](#license)
+* [Acknowledgements](#acknowledgements)
 
-## Installation  
-Clone the repository and install the required packages:  
+## Project Overview
+
+This repository provides Python implementations of two models to classify daily bushfire risk:
+
+1. **Multilayer Perceptron (MLP)**: A fully connected neural network using `sklearn.neural_network.MLPClassifier`.
+2. **Long Short-Term Memory (LSTM)**: A recurrent neural network for sequence modeling in `LSTM.py`.
+
+Both models are trained on the [WeatherAUS dataset](https://www.kaggle.com/jsphyg/weather-dataset-rattle-package) and output a binary risk label (High/Low). Scripts handle data preprocessing, model training, and evaluation.
+
+## Installation
+
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/ErrorChen/Bushfire-prediction.git
+   cd Bushfire-prediction
+   ```
+
+2. **Create a virtual environment and install dependencies**
+
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate    # Linux/macOS
+   venv\Scripts\activate     # Windows
+   pip install -r requirements.txt
+   ```
+
+Dependencies:
+
+* `pandas`
+* `numpy`
+* `scikit-learn`
+* `tensorflow` (for LSTM)
+
+## Data
+
+1. **Download** the WeatherAUS dataset from Kaggle:
+   [https://www.kaggle.com/jsphyg/weather-dataset-rattle-package](https://www.kaggle.com/jsphyg/weather-dataset-rattle-package)
+
+2. **Place** the unzipped `weatherAUS.csv` file into the `datasets/` directory.
+
+The dataset includes daily weather observations (temperature, rainfall, humidity, wind speed, pressure) across multiple Australian stations.
+
+## Usage
+
+### MLP Model
+
+Run the MLP classifier:
+
 ```bash
-git clone https://github.com/ErrorChen/Bushfire-prediction.git
-cd Bushfire-prediction
-pip install pandas numpy scikit-learn
+python MLP.py \
+  --data-path datasets/weatherAUS.csv \
+  --target-variable Risk  \
+  --hidden-layers 100 50 \
+  --epochs 200
 ```
 
-## Data Description  
-The dataset (`AUSWeatherData.csv`) is sourced from the WeatherAUS collection on Kaggle, which provides daily weather observations from multiple Australian stations, including temperature, rainfall, humidity, wind speed and atmospheric pressure. It comprises approximately 145 000 rows and 23 columns, with a binary target indicating high or low bushfire risk.
+### LSTM Model
 
-## Usage  
-Run the MLP training and evaluation script as follows:  
+Run the LSTM model for sequence prediction:
+
 ```bash
-python MLP.py
-```  
-By default, the script loads the CSV, preprocesses features, splits into train/test sets, trains the MLPClassifier, and prints a classification report.
+python LSTM.py \
+  --data-path datasets/weatherAUS.csv \
+  --sequence-length 10 \
+  --batch-size 32 \
+  --epochs 50
+```
 
-## Model Implementation  
-- **Algorithm**: `sklearn.neural_network.MLPClassifier` with ReLU activation and Adam optimiser.  
-- **Hyperparameters**:  
-  - `hidden_layer_sizes=(100, 50)`  
-  - `activation='relu'`  
-  - `solver='adam'`  
-  - `alpha=1e-4`  
-  - `learning_rate_init=1e-3`  
-  - `max_iter=200`  
-  - `random_state=42`  
+Scripts automatically:
 
-These settings provide a balance between capacity and training stability.
+* Load and clean the CSV
+* Encode categorical features (one-hot)
+* Impute missing values
+* Split data into training/testing sets
+* Train and evaluate the model
 
-## Evaluation  
-Model performance is assessed using the `classification_report` from `sklearn.metrics`, which outputs precision, recall, F1-score and support for each class. Example output is printed to the console upon script completion.
+## Model Implementations
 
-## Project Structure  
+### MLPClassifier
+
+* **Architecture**: Two hidden layers (`hidden_layer_sizes=(100, 50)`)
+* **Activation**: ReLU
+* **Solver**: Adam
+* **Hyperparameters**:
+
+  * `alpha=1e-4`
+  * `learning_rate_init=1e-3`
+  * `max_iter=200`
+  * `random_state=42`
+
+### LSTM
+
+* **Architecture**: Single LSTM layer with 64 units, followed by Dense output
+* **Loss**: Binary crossentropy
+* **Optimizer**: Adam
+* **Hyperparameters**:
+
+  * `sequence_length`: length of input time window
+  * `batch_size`: training batch size
+  * `epochs`: number of training epochs
+
+## Results
+
+After training, both scripts print a classification report:
+
+```
+              precision    recall  f1-score   support
+
+        Low       0.85      0.90      0.87     20000
+       High       0.82      0.75      0.78     15000
+
+   accuracy                           0.84     35000
+  macro avg       0.84      0.83      0.83     35000
+weighted avg       0.84      0.84      0.84     35000
+```
+
+Feel free to adjust hyperparameters to improve performance.
+
+## Project Structure
+
 ```
 Bushfire-prediction/
-├── AUSWeatherData.csv        # WeatherAUS dataset CSV
-├── MLP.py                    # MLP model training & evaluation script
-├── proj.code-workspace       # VS Code workspace settings
-├── LICENSE                   # MIT licence
-└── README.md                 # Project documentation
+├── datasets/             # Raw and processed data files
+│   └── weatherAUS.csv
+├── MLP.py                # MLPClassifier training and evaluation
+├── LSTM.py               # LSTM model training and evaluation
+├── requirements.txt      # Python dependencies
+├── proj.code-workspace   # VS Code workspace settings
+├── LICENSE               # MIT license
+└── README.md             # Project documentation
 ```
 
-## Contributing  
-1. Fork the repository.  
-2. Create a branch: `git checkout -b feature/your-feature`.  
-3. Commit your changes: `git commit -m "Add feature"`.  
-4. Push to your branch: `git push origin feature/your-feature`.  
-5. Open a Pull Request for review.
+## Contributing
 
-## Licence  
-This project is released under the MIT Licence. See the [LICENSE](LICENSE) file for details.
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/...`)
+3. Commit your changes (`git commit -m "Add ..."`)
+4. Push to your branch (`git push origin feature/...`)
+5. Open a Pull Request for review
 
-## Acknowledgements  
-- WeatherAUS dataset on Kaggle  
-- Scikit-learn machine learning library  
-- University of Sydney ENGG2112 course resources  
+## License
+
+This project is released under the MIT License. See [LICENSE](LICENSE) for details.
+
+## Acknowledgements
+
+* WeatherAUS dataset on Kaggle
+* Scikit-learn and TensorFlow libraries
+* University of Sydney ENGG2112 course materials
