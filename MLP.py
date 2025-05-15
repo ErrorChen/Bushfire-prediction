@@ -61,7 +61,9 @@ def train_fire_attribute_model():
     le = LabelEncoder()
     y_enc = le.fit_transform(y)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y_enc, test_size=0.2, random_state=42, stratify=y_enc)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y_enc, test_size=0.2, random_state=42, stratify=y_enc
+    )
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('mlp', MLPClassifier(
@@ -88,18 +90,26 @@ def train_modis_model():
         raise FileNotFoundError("No MODIS CSV files found in datasets/")
     df = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
 
-    df['acq_datetime'] = pd.to_datetime(df['acq_date'] + ' ' + df['acq_time'].astype(str).str.zfill(4), format='%Y-%m-%d %H%M')
+    df['acq_datetime'] = pd.to_datetime(
+        df['acq_date'] + ' ' + df['acq_time'].astype(str).str.zfill(4),
+        format='%Y-%m-%d %H%M'
+    )
     df['month'] = df['acq_datetime'].dt.month
     df['dayofyear'] = df['acq_datetime'].dt.dayofyear
     df['hour'] = df['acq_datetime'].dt.hour
     df['is_day'] = (df['daynight'] == 'D').astype(int)
     df['sat_code'] = df['satellite'].astype('category').cat.codes
 
-    features = ['brightness', 'bright_t31', 'frp', 'confidence', 'scan', 'track', 'month', 'dayofyear', 'hour', 'is_day', 'sat_code']
+    features = [
+        'brightness', 'bright_t31', 'frp', 'scan', 'track',
+        'month', 'dayofyear', 'hour', 'is_day', 'sat_code'
+    ]
     X = df[features]
     y = (df['confidence'] > 80).astype(int)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
     pipeline = Pipeline([
         ('scaler', StandardScaler()),
         ('mlp', MLPClassifier(
@@ -120,17 +130,28 @@ def train_modis_model():
 
 
 def generate_bushfire_report():
-    """
-    Train all models and print flattened summary table.
-    """
-    results = [train_rainfall_model(), train_fire_attribute_model(), train_modis_model()]
+    results = [
+        train_rainfall_model(),
+        train_fire_attribute_model(),
+        train_modis_model()
+    ]
     df = pd.json_normalize(results, sep='_')
-    df = df.rename(columns={'task': 'Task', 'MSE': 'Regression_MSE', 'R2': 'Regression_R2', 'accuracy': 'Classification_Accuracy'})
+    df = df.rename(columns={
+        'task': 'Task',
+        'MSE': 'Regression_MSE',
+        'R2': 'Regression_R2',
+        'accuracy': 'Classification_Accuracy'
+    })
     df.columns = df.columns.str.replace('report_', '', regex=False)
     df.columns = df.columns.str.replace('macro avg_', 'macro_', regex=False)
     df.columns = df.columns.str.replace('weighted avg_', 'weighted_', regex=False)
     df.columns = df.columns.str.replace(r'\s+', '_', regex=True)
-    keep = ['Task', 'Regression_MSE', 'Regression_R2', 'Classification_Accuracy', 'macro_precision', 'macro_recall', 'macro_f1-score', 'weighted_precision', 'weighted_recall', 'weighted_f1-score']
+    keep = [
+        'Task', 'Regression_MSE', 'Regression_R2',
+        'Classification_Accuracy',
+        'macro_precision', 'macro_recall', 'macro_f1-score',
+        'weighted_precision', 'weighted_recall', 'weighted_f1-score'
+    ]
     cols = [c for c in keep if c in df.columns]
     print("\n== Bushfire Prediction Summary ==")
     print(df[cols].to_string(index=False))
