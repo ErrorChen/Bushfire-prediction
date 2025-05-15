@@ -8,9 +8,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import mean_squared_error, r2_score, classification_report
 
 def train_rainfall_model():
-    # —— 1. 年度降雨 & Bushfire Index 回归 —— 
+    # -- 1. Annual rainfall & Bushfire Index regression --
     df = pd.read_csv('datasets/rainfall.csv', header=0)
-    # 重命名列
+    # Rename columns
     months = ['Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun','Jul']
     rename_map = {'Unnamed: 0':'Period',
                   'Dennison Bushfire Indices':'BushfireIndex',
@@ -19,7 +19,7 @@ def train_rainfall_model():
         rename_map[f'Unnamed: {i}'] = m
     df = df.rename(columns=rename_map)
 
-    # 转为数值型并丢弃含缺失值的行
+    # Convert to numeric and drop rows with missing values
     to_num = months + ['BushfireIndex', 'Ha_Burnt']
     for col in to_num:
         df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -49,15 +49,14 @@ def train_rainfall_model():
     print(f' MSE: {mean_squared_error(y_test,y_pred):.2f}')
     print(f'  R²: {r2_score(y_test,y_pred):.3f}\n')
 
-
 def train_fire_attribute_model():
-    # —— 2. 地块属性分类 —— 
+    # -- 2. Plot attribute classification --
     df = pd.read_csv('datasets/fire_for16-21_attributes.csv', header=0)
 
-    # 基本数值特征
+    # Basic numeric features
     X = df[['COUNT','VALUE','FOREST']].copy()
 
-    # 类别特征 one-hot
+    # Categorical features one-hot encoding
     for cat in ['FOR_CATEGO','FOR_TEN','STATE']:
         X = pd.concat([X, pd.get_dummies(df[cat], prefix=cat)], axis=1)
 
@@ -86,14 +85,13 @@ def train_fire_attribute_model():
     print('== Fire Attribute → Burn Type Classification ==')
     print(classification_report(y_test, y_pred, target_names=le.classes_))
 
-
 def train_modis_model():
-    # —— 3. MODIS 热点高置信度分类 —— 
+    # -- 3. MODIS high-confidence hotspot classification --
     files = glob.glob('datasets/modis_*.csv')
     df_list = [pd.read_csv(f) for f in files]
     df = pd.concat(df_list, ignore_index=True)
 
-    # 时间解析
+    # Parse datetime
     df['acq_datetime'] = pd.to_datetime(
         df['acq_date'] + ' ' +
         df['acq_time'].astype(str).str.zfill(4),
@@ -103,7 +101,7 @@ def train_modis_model():
     df['dayofyear'] = df['acq_datetime'].dt.dayofyear
     df['hour']      = df['acq_datetime'].dt.hour
 
-    # 编码
+    # Encode features
     df['is_day']   = (df['daynight']=='D').astype(int)
     df['sat_code'] = df['satellite'].astype('category').cat.codes
 
@@ -114,7 +112,7 @@ def train_modis_model():
     ]
     X = df[features]
 
-    # 目标：置信度 > 80% 视作“高置信火点”
+    # Target: confidence > 80% as high-confidence hotspot
     y = (df['confidence'] > 80).astype(int)
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -137,7 +135,6 @@ def train_modis_model():
 
     print('== MODIS Hotspot High-Confidence Classification ==')
     print(classification_report(y_test, y_pred))
-
 
 if __name__ == '__main__':
     train_rainfall_model()
