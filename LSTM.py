@@ -1,85 +1,116 @@
+# bushfire_lstm_modis.py
+
 import os
-import numpy as np
+# Suppress most TF logging, except errors
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
+import tensorflow as tf
+from tensorflow.keras import mixed_precision
+
+# 1. GPU Configuration
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    for gpu in gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+    logical_gpus = tf.config.list_logical_devices('GPU')
+    print(f"Enabled {len(gpus)} Physical GPUs, {len(logical_gpus)} Logical GPUs")
+else:
+    print("No GPU detected, using CPU")
+
+# 2. Mixed precision (optional, may improve performance on modern GPUs)
+mixed_precision.set_global_policy('mixed_float16')
+print("Mixed precision policy:", mixed_precision.global_policy())
+
+import glob
 import pandas as pd
+import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
+import joblib
 
-def load_rainfall_data(path: str = 'datasets/rainfall.csv') -> pd.DataFrame:
-    # CSV header row is on line 1 (header=1)
-    df = pd.read_csv(path, header=1)
-    # Keep year sequence with monthly rainfall and burnt area
-    months = ['Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun','Jul']
-    # Remove unnecessary columns
-    df = df.drop(columns=['Unnamed: 0', 'Unnamed: 13', 'Aug-Jan', 'Sep-Jan', 'Oct-Jan'], errors='ignore')
-    # Convert to numeric values
-    for m in months:
-        df[m] = pd.to_numeric(df[m], errors='coerce')
-    df['Ha Burnt'] = pd.to_numeric(df['Ha Burnt'], errors='coerce')
-    # Drop rows containing NaN values
-    df = df.dropna(subset=months + ['Ha Burnt']).reset_index(drop=True)
-    return df
+# 3. Read and concatenate MODIS CSV files (2013–2022)
+data_dir = os.path.join(os.getcwd(), 'datasets')
+all_files = sorted(glob.glob(os.path.join(data_dir, 'modis_*.csv')))
+if not all_files:
+    raise FileNotFoundError(f"No files found in {data_dir} matching 'modis_*.csv'")
 
-def create_sequences(data: np.ndarray, seq_len: int = 12) -> np.ndarray:
-    # Treat each row as a sequence
-    # data: (n_samples, seq_len)
-    # return (n_samples, seq_len, 1)
-    return data.reshape(data.shape[0], seq_len, 1)
+df_list = [pd.read_csv(f) for f in all_files]
+data = pd.concat(df_list, ignore_index=True)
 
-def build_lstm_model(seq_len: int, n_features: int = 1) -> Sequential:
-    model = Sequential([
-        LSTM(50, activation='tanh', input_shape=(seq_len, n_features)),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
+# 4. Preprocessing
+data['acq_date'] = pd.to_datetime(data['acq_date'])
+data.sort_values('acq_date', inplace=True)
+data.ffill(inplace=True)  # forward-fill missing values
 
-def main():
-    # 1. Load data
-    df = load_rainfall_data(os.path.join('datasets', 'rainfall.csv'))
-    months = ['Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun','Jul']
-    X = df[months].values  # (n_years, 12)
-    y = df['Ha Burnt'].values.reshape(-1, 1)
+# 5. One-Hot encode all non-numeric categorical columns (excluding date & target)
+exclude = ['acq_date', 'brightness']
+cat_cols = [c for c in data.columns if c not in exclude and data[c].dtype == object]
+if cat_cols:
+    data = pd.get_dummies(data, columns=cat_cols, drop_first=True)
 
-    # 2. Normalize data
-    x_scaler = MinMaxScaler(feature_range=(0,1))
-    y_scaler = MinMaxScaler(feature_range=(0,1))
-    # Flatten X for scaling then reshape into sequences
-    X_flat = x_scaler.fit_transform(X)
-    X_seq = create_sequences(X_flat, seq_len=12)
-    y_scaled = y_scaler.fit_transform(y)
+# 6. Feature & target split
+if 'brightness' not in data.columns:
+    raise KeyError("'brightness' column not found after encoding")
 
-    # 3. Split into training and test sets
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_seq, y_scaled, test_size=0.2, random_state=42
-    )
+feature_cols = [c for c in data.columns if c not in ['acq_date', 'brightness']]
+X_raw = data[feature_cols].values.astype('float32')
+y_raw = data['brightness'].values.reshape(-1, 1).astype('float32')
 
-    # 4. Build and train model
-    model = build_lstm_model(seq_len=12)
-    cb = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-    history = model.fit(
-        X_train, y_train,
-        epochs=100,
-        batch_size=16,
-        validation_split=0.2,
-        callbacks=[cb],
-        verbose=2
-    )
+# 7. Normalisation
+scaler_X = MinMaxScaler()
+scaler_y = MinMaxScaler()
+X_scaled = scaler_X.fit_transform(X_raw)
+y_scaled = scaler_y.fit_transform(y_raw)
 
-    # 5. Evaluate and predict
-    y_pred_scaled = model.predict(X_test)
-    # Inverse transform to original scale
-    y_pred = y_scaler.inverse_transform(y_pred_scaled)
-    y_true = y_scaler.inverse_transform(y_test)
+# 8. Build time-series sequences
+def create_sequences(X, y, seq_len=30):
+    Xs, ys = [], []
+    for i in range(len(X) - seq_len):
+        Xs.append(X[i:i + seq_len])
+        ys.append(y[i + seq_len])
+    return np.array(Xs), np.array(ys)
 
-    # Print sample results
-    for i in range(min(5, len(y_true))):
-        print(f"Sample {i}: True Ha Burnt = {y_true[i,0]:.1f}, Predicted = {y_pred[i,0]:.1f}")
+SEQ_LEN = 30
+X_seq, y_seq = create_sequences(X_scaled, y_scaled, SEQ_LEN)
 
-    # Optional: save the model
-    model.save('lstm_bushfire_model.h5')
+# 9. Train/test split (no shuffling)
+X_train, X_test, y_train, y_test = train_test_split(
+    X_seq, y_seq, test_size=0.2, random_state=42, shuffle=False
+)
 
-if __name__ == '__main__':
-    main()
+# 10. Build LSTM model
+model = Sequential([
+    LSTM(64, input_shape=(SEQ_LEN, X_train.shape[2]), return_sequences=True),
+    Dropout(0.2),
+    LSTM(32),
+    Dropout(0.2),
+    Dense(16, activation='relu'),
+    # If using mixed precision, output layer should be float32
+    Dense(1, activation='linear', dtype='float32')
+])
+
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+model.summary()
+
+# 11. Train with EarlyStopping
+es = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+history = model.fit(
+    X_train, y_train,
+    epochs=50,
+    batch_size=64,
+    validation_split=0.1,
+    callbacks=[es],
+    verbose=2
+)
+
+# 12. Evaluate on test set
+loss, mae = model.evaluate(X_test, y_test, verbose=0)
+print(f"Test MSE: {loss:.4f}, Test MAE: {mae:.4f}")
+
+# 13. Save model and scalers
+model.save('bushfire_lstm_modis.h5')
+joblib.dump(scaler_X, 'scaler_X.save')
+joblib.dump(scaler_y, 'scaler_y.save')
