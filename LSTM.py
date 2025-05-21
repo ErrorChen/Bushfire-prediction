@@ -1,5 +1,4 @@
-import os
-import glob
+import os, glob
 import numpy as np
 import pandas as pd
 
@@ -19,237 +18,234 @@ from sklearn.metrics import (
 
 import matplotlib.pyplot as plt
 
-# --- 数据集定义 ---
+# ─── Dataset ────────────────────────────────────────────────────────────────
 class FireDataset(Dataset):
-    def __init__(self, X, Y, W):
-        self.X = torch.from_numpy(X).float()
-        self.Y = torch.from_numpy(Y).float().unsqueeze(1)
-        self.W = torch.from_numpy(W).float().unsqueeze(1)
+    def __init__(self, X, Y_log, Y_raw, W):
+        self.X      = torch.from_numpy(X.astype(np.float32))
+        self.Y_log  = torch.from_numpy(Y_log.astype(np.float32))
+        self.Y_raw  = torch.from_numpy(Y_raw.astype(np.float32))
+        self.W      = torch.from_numpy(W.astype(np.float32))
     def __len__(self):
         return len(self.X)
-    def __getitem__(self, idx):
-        return self.X[idx], self.Y[idx], self.W[idx]
+    def __getitem__(self, i):
+        return self.X[i], self.Y_log[i], self.Y_raw[i], self.W[i]
 
-# --- 注意力模块 ---
-class Attention(nn.Module):
-    def __init__(self, dim):
+# ─── Multi-Head Self-Attention ───────────────────────────────────────────────
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, dim, heads=4):
         super().__init__()
-        self.score = nn.Linear(dim, 1)
-    def forward(self, lstm_out):       # lstm_out: (B, T, D)
-        scores = self.score(lstm_out) # (B, T, 1)
-        weights = torch.softmax(scores, dim=1)
-        context = torch.sum(weights * lstm_out, dim=1)  # (B, D)
-        return context
+        self.heads, self.dim = heads, dim
+        assert dim % heads == 0
+        self.dk = dim // heads
+        self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
+        self.unify  = nn.Linear(dim, dim)
+    def forward(self, x):
+        B, T, D = x.size()
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        qs, ks, vs = [
+            t.view(B, T, self.heads, self.dk).transpose(1,2)
+            for t in qkv
+        ]
+        scores = torch.matmul(qs, ks.transpose(-2,-1)) / np.sqrt(self.dk)
+        attn   = torch.softmax(scores, dim=-1)
+        out    = torch.matmul(attn, vs)\
+                    .transpose(1,2)\
+                    .contiguous()\
+                    .view(B, T, D)
+        return self.unify(out)
 
-# --- 主模型 ---
-class FireLSTM(nn.Module):
-    def __init__(
-        self,
-        input_dim,
-        hid_dim=128,
-        num_layers=2,
-        bidirectional=True,
-        dropout=0.2
-    ):
+# ─── Model: CNN–LSTM + Attention + FFN ────────────────────────────────────────
+class ImprovedFireModel(nn.Module):
+    def __init__(self, feat_dim, hid_dim=128, lstm_layers=2, heads=4, dropout=0.2):
         super().__init__()
-        self.lstm = nn.LSTM(
-            input_dim,
-            hid_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=bidirectional,
-            dropout=dropout
+        # 1D CNN
+        self.cnn = nn.Sequential(
+            nn.Conv1d(feat_dim, hid_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv1d(hid_dim, hid_dim, kernel_size=3, padding=1),
+            nn.ReLU()
         )
-        d = hid_dim * (2 if bidirectional else 1)
-        self.attn = Attention(d)
-        self.norm = nn.LayerNorm(d)
-        self.fc   = nn.Linear(d, 1)
+        # LSTM
+        self.lstm = nn.LSTM(
+            hid_dim, hid_dim, lstm_layers,
+            batch_first=True, bidirectional=True, dropout=dropout
+        )
+        # Attention & FFN
+        self.attn = MultiHeadSelfAttention(hid_dim * 2, heads=heads)
+        self.norm = nn.LayerNorm(hid_dim * 2)
+        self.ffn  = nn.Sequential(
+            nn.Linear(hid_dim*2, hid_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hid_dim, 1)
+        )
 
     def forward(self, x):
-        out, _ = self.lstm(x)    # (B, T, D)
-        ctx    = self.attn(out)  # (B, D)
-        ctx    = self.norm(ctx)
-        return self.fc(ctx)      # (B, 1)
+        # x: (B, T, F)
+        c        = self.cnn(x.transpose(1,2))  # (B, H, T)
+        c        = c.transpose(1,2)            # (B, T, H)
+        out, _   = self.lstm(c)                # (B, T, 2H)
+        attn_out = self.attn(out)              # (B, T, 2H)
+        # 取最后 time-step
+        last_lstm = out[:, -1, :]              # (B, 2H)
+        last_attn = attn_out[:, -1, :]         # (B, 2H)
+        h         = self.norm(last_lstm + last_attn)
+        return self.ffn(h).squeeze(-1)         # (B,)
 
-# --- 入口函数 ---
+# ─── Adaptive Extreme Loss ───────────────────────────────────────────────────
+class ExtremeLoss(nn.Module):
+    def __init__(self, base_loss=nn.L1Loss(reduction='none'), thr=0.05):
+        super().__init__()
+        self.base, self.thr = base_loss, thr
+    def forward(self, pred, target, weight):
+        # pred & target: (B,), weight: (B,)
+        err  = self.base(pred, target)
+        mask = (err > self.thr).float()
+        return ((1 + mask) * err * weight).mean()
+
+# ─── Main Training Loop ───────────────────────────────────────────────────────
 def main():
     mp.freeze_support()
-
-    # 设备准备
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
 
-    # 1. 读取并按天汇总
-    data_dir = 'datasets'
-    files = sorted(glob.glob(os.path.join(data_dir, 'modis_????_Australia.csv')))
-    df = pd.concat([pd.read_csv(f, parse_dates=['acq_date']) for f in files], ignore_index=True)
+    # 1. Load & aggregate daily
+    files = sorted(glob.glob('datasets/modis_????_Australia.csv'))
+    df    = pd.concat([pd.read_csv(f, parse_dates=['acq_date']) for f in files],
+                      ignore_index=True)
     df['date'] = df['acq_date'].dt.floor('D')
     daily = df.groupby('date').agg(
-        count_fires     = ('frp',       'size'),
-        mean_brightness = ('brightness','mean'),
-        max_brightness  = ('brightness','max'),
-        mean_confidence = ('confidence','mean'),
-        mean_scan       = ('scan',      'mean'),
-        mean_track      = ('track',     'mean'),
-        day_count       = ('daynight', lambda x: (x=='D').sum()),
-        night_count     = ('daynight', lambda x: (x=='N').sum()),
-        frp_sum         = ('frp',       'sum')
+        count=('frp','size'),
+        mb=('brightness','mean'),
+        Nb=('brightness','max'),
+        mc=('confidence','mean'),
+        ms=('scan','mean'),
+        mt=('track','mean'),
+        dcount=('daynight',lambda x:(x=='D').sum()),
+        ncount=('daynight',lambda x:(x=='N').sum()),
+        frp_raw=('frp','sum')
     ).reset_index()
-    full_idx = pd.date_range(daily['date'].min(), daily['date'].max(), freq='D')
-    daily = (daily.set_index('date')
-                  .reindex(full_idx)
-                  .fillna(0)
-                  .rename_axis('date')
-                  .reset_index())
+    idx   = pd.date_range(daily.date.min(), daily.date.max(), freq='D')
+    daily = daily.set_index('date').reindex(idx, fill_value=0)\
+                 .rename_axis('date').reset_index()
 
-    # 对数化目标：log(FRP+1)
-    daily['frp_log'] = np.log1p(daily['frp_sum'])
+    # 2. Log-transform & scale
+    daily['frp_log'] = np.log1p(daily['frp_raw'])
+    feats    = ['count','mb','Nb','mc','ms','mt','dcount','ncount']
+    scaler_X = MinMaxScaler(); scaler_y = MinMaxScaler()
+    X_all    = scaler_X.fit_transform(daily[feats]).astype(np.float32)
+    y_log    = scaler_y.fit_transform(daily[['frp_log']]).flatten().astype(np.float32)
+    y_raw    = daily['frp_raw'].to_numpy(dtype=np.float32)
 
-    # 特征列与目标
-    feature_cols = [
-        'count_fires','mean_brightness','max_brightness',
-        'mean_confidence','mean_scan','mean_track',
-        'day_count','night_count'
-    ]
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
-    X_all = scaler_X.fit_transform(daily[feature_cols])
-    y_all = scaler_y.fit_transform(daily[['frp_log']]).flatten()
+    # 3. Sliding window
+    T, F = 30, len(feats)
+    X, Yl, Yr = [], [], []
+    for i in range(len(X_all)-T):
+        X.append(X_all[i:i+T])
+        Yl.append(y_log[i+T])
+        Yr.append(y_raw[i+T])
+    X   = np.stack(X)
+    Yl  = np.array(Yl)
+    Yr  = np.array(Yr)
 
-    # 构造滑动窗口
-    SEQ_LEN = 30
-    X, Y = [], []
-    for i in range(len(X_all) - SEQ_LEN):
-        X.append(X_all[i:i+SEQ_LEN])
-        Y.append(y_all[i+SEQ_LEN])
-    X = np.stack(X)  # (N, T, F)
-    Y = np.array(Y)  # (N,)
+    # 4. Weight by 90th percentile
+    p90 = np.percentile(y_raw, 90)
+    W   = ((y_raw > p90) * 1.5 + 1.0).astype(np.float32)
 
-    # 样本权重：90th 百分位以上加权
-    thr90 = np.percentile(daily['frp_sum'], 90)
-    W = np.array([
-        2.0 if daily['frp_sum'].iloc[i+SEQ_LEN] > thr90 else 1.0
-        for i in range(len(X))
-    ])
+    # 5. Split train/val
+    n   = len(X); nt = int(0.8 * n)
+    by = lambda a: (a[:nt], a[nt:])
+    X_tr, X_va = by(X)
+    Yl_tr, Yl_va = by(Yl)
+    Yr_tr, Yr_va = by(Yr)
+    W_tr, W_va   = by(W)
 
-    # 划分训练/验证
-    n_train = int(0.8 * len(X))
-    X_tr, X_va = X[:n_train], X[n_train:]
-    Y_tr, Y_va = Y[:n_train], Y[n_train:]
-    W_tr, W_va = W[:n_train], W[n_train:]
+    tr_ds = FireDataset(X_tr, Yl_tr, Yr_tr, W_tr)
+    va_ds = FireDataset(X_va, Yl_va, Yr_va, W_va)
+    tr_ld = DataLoader(tr_ds, batch_size=32, shuffle=True,  pin_memory=True, num_workers=0)
+    va_ld = DataLoader(va_ds, batch_size=32, shuffle=False, pin_memory=True, num_workers=0)
 
-    train_ds = FireDataset(X_tr, Y_tr, W_tr)
-    val_ds   = FireDataset(X_va, Y_va, W_va)
-
-    train_loader = DataLoader(
-        train_ds, batch_size=32, shuffle=True,
-        num_workers=0, pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_ds, batch_size=32,
-        num_workers=0, pin_memory=True
-    )
-
-    # 模型、损失、优化、调度
-    model = FireLSTM(input_dim=len(feature_cols)).to(device)
-    criterion = nn.SmoothL1Loss(reduction='none')  # HuberLoss
+    # 6. Model, loss, optim, scheduler
+    model     = ImprovedFireModel(F).to(device)
+    criterion = ExtremeLoss(thr=0.05)
     optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10
-    )
+                    optimizer, mode='min', factor=0.5, patience=10
+                )
 
-    # 训练参数
-    EPOCHS   = 500
-    PATIENCE = 60
-    fire_thr  = 10.0   # moderate fire 阈值（MW）:contentReference[oaicite:3]{index=3}
-    large_thr = 100.0  # large fire 阈值（MW）:contentReference[oaicite:4]{index=4}
+    # 7. Training settings
+    EPOCHS, PATIENCE, MIN_DELTA = 500, 20, 1e-3
+    eps = 500.0  # error tolerance for accuracy/precision
+    best_score, wait = float('inf'), 0
+    history = {'train':[], 'val':[]}
 
-    history = {'train_loss': [], 'val_loss': []}
-    best_mae, best_ep = float('inf'), 0
-
-    # 逐 Epoch 训练
     for ep in range(1, EPOCHS+1):
-        # —— Train —— #
+        # — Train —
         model.train()
-        total_t = 0.0
-        for xb, yb, wb in train_loader:
-            xb, yb, wb = xb.to(device), yb.to(device), wb.to(device)
-            pred = model(xb)
-            loss = criterion(pred, yb).mul(wb).mean()
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_t += loss.item() * xb.size(0)
-        tr_loss = total_t / len(train_ds)
-        history['train_loss'].append(tr_loss)
+        train_loss = 0.0
+        for xb, yb_log, _, wb in tr_ld:
+            xb, yb_log, wb = xb.to(device), yb_log.to(device), wb.to(device)
+            pred_log = model(xb)
+            loss     = criterion(pred_log, yb_log, wb)
+            optimizer.zero_grad(); loss.backward(); optimizer.step()
+            train_loss += loss.item() * xb.size(0)
+        train_loss /= len(tr_ds)
+        history['train'].append(train_loss)
 
-        # —— Eval —— #
+        # — Validate —
         model.eval()
-        total_v, preds, truths = 0.0, [], []
+        val_loss = 0.0
+        preds_log = []
+        truths    = []
         with torch.no_grad():
-            for xb, yb, _ in val_loader:
-                xb, yb = xb.to(device), yb.to(device)
-                p = model(xb)
-                total_v += criterion(p, yb).mean().item() * xb.size(0)
-                preds.append(p.cpu().numpy())
-                truths.append(yb.cpu().numpy())
-        val_loss = total_v / len(val_ds)
-        history['val_loss'].append(val_loss)
-
-        # 调度
-        old_lr = optimizer.param_groups[0]['lr']
+            for xb, yb_log, yb_raw, _ in va_ld:
+                xb, yb_log = xb.to(device), yb_log.to(device)
+                pred_log = model(xb)
+                val_loss += criterion(pred_log, yb_log, torch.ones_like(yb_log)).item() * xb.size(0)
+                preds_log.append(pred_log.cpu().numpy())
+                truths.append(yb_raw.numpy())
+        val_loss /= len(va_ds)
+        history['val'].append(val_loss)
         scheduler.step(val_loss)
-        new_lr = optimizer.param_groups[0]['lr']
-        if new_lr != old_lr:
-            print(f'LR reduced: {old_lr:.5f} → {new_lr:.5f}')
 
-        # 反变换至实际 FRP（MW）
-        preds_act  = np.expm1(scaler_y.inverse_transform(np.vstack(preds)))
-        truths_act = np.expm1(scaler_y.inverse_transform(np.vstack(truths)))
+        # — Metrics —
+        preds_log = np.concatenate(preds_log)
+        preds_frp = np.expm1(scaler_y.inverse_transform(preds_log[:,None])).flatten()
+        truths    = np.concatenate(truths)
 
-        # 回归指标
-        mae  = mean_absolute_error(truths_act, preds_act)
-        rmse = np.sqrt(mean_squared_error(truths_act, preds_act))
-        r2   = r2_score(truths_act, preds_act)
-        mape = np.mean(np.abs((truths_act - preds_act) / (truths_act + 1e-6)))
-        conf = 1 - mape
+        mae   = mean_absolute_error(truths, preds_frp)
+        rmse  = np.sqrt(mean_squared_error(truths, preds_frp))
+        r2    = r2_score(truths, preds_frp)
 
-        # 二分类指标：中等火 & 大火
-        true_mod = (truths_act > fire_thr).astype(int)
-        pred_mod = (preds_act   > fire_thr).astype(int)
-        acc_mod  = accuracy_score(true_mod, pred_mod)
-        prec_mod = precision_score(true_mod, pred_mod, zero_division=0)
-
-        true_large = (truths_act > large_thr).astype(int)
-        pred_large = (preds_act   > large_thr).astype(int)
-        acc_l = accuracy_score(true_large, pred_large)
-        prec_l= precision_score(true_large, pred_large, zero_division=0)
+        # Accuracy/Precision within eps
+        correct = np.abs(preds_frp - truths) <= eps
+        acc_eps = accuracy_score(correct, np.ones_like(correct))
+        prec_eps= precision_score(correct, np.ones_like(correct), zero_division=0)
 
         print(
-            f"Epoch {ep:03d}/{EPOCHS} — "
-            f"TrHuber: {tr_loss:.5f} | ValHuber: {val_loss:.5f} | "
+            f"Epoch {ep}/{EPOCHS} | "
+            f"TrH: {train_loss:.4f} | VaH: {val_loss:.4f} | "
             f"MAE: {mae:.1f} | RMSE: {rmse:.1f} | R²: {r2:.3f} | "
-            f"Acc_mod: {acc_mod:.3f} | Prec_mod: {prec_mod:.3f} | "
-            f"Acc_large: {acc_l:.3f} | Prec_large: {prec_l:.3f}"
+            f"Acc@{int(eps)}: {acc_eps:.3f} | Prec@{int(eps)}: {prec_eps:.3f}"
         )
 
-        # EarlyStopping (监控 MAE)
-        if mae < best_mae:
-            best_mae, best_ep = mae, ep
-            torch.save(model.state_dict(), 'best_fire_lstm.pth')
-        elif ep - best_ep >= PATIENCE:
-            print(f"Early stopping at epoch {ep}, best MAE {best_mae:.1f} at epoch {best_ep}")
-            break
+        # — Improved EarlyStopping —
+        score = mae + 0.1 * rmse
+        if best_score - score > MIN_DELTA:
+            best_score, wait = score, 0
+            torch.save(model.state_dict(), 'best_improved.pth')
+        else:
+            wait += 1
+            if wait >= PATIENCE:
+                print(f"Early stopping at epoch {ep} (no improvement ≥{MIN_DELTA} for {PATIENCE} epochs)")
+                break
 
-    # 绘制损失曲线
-    plt.figure()
-    plt.plot(history['train_loss'], label='Train Huber')
-    plt.plot(history['val_loss'],   label='Val Huber')
-    plt.xlabel('Epoch')
-    plt.ylabel('Huber Loss')
-    plt.legend()
+    # 8. Plot Loss curves
+    plt.plot(history['train'], label='Train Loss')
+    plt.plot(history['val'],   label='Val Loss')
+    plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.legend()
     plt.title('Training & Validation Loss')
     plt.show()
 
