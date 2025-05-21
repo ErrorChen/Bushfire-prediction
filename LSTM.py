@@ -125,7 +125,7 @@ def make_loaders(X, Yl, Yr, W, split=0.8, batch_size=32):
 
 
 # ─── Main training loop with multi-criteria early stopping ──────────────
-def main(dynamic_split=False):
+def main(dynamic_split=True):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     if device.type == 'cuda':
@@ -312,4 +312,4 @@ def main(dynamic_split=False):
 
 if __name__ == "__main__":
     # Set dynamic_split=True to reshuffle train/val each epoch
-    main(dynamic_split=False)
+    main(dynamic_split=True)
