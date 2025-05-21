@@ -15,15 +15,14 @@ from sklearn.metrics import (
 import matplotlib.pyplot as plt
 
 
-# ─── FireDataset ────────────────────────────────────────────────────────────
+# ─── FireDataset: wrap our sliding-window arrays in a PyTorch Dataset ────
 class FireDataset(Dataset):
     def __init__(self, X, Y_log, Y_raw, W):
         """
-        Wrap sliding-window arrays as a PyTorch dataset.
-        X     : (N, T, F) feature windows
-        Y_log : (N,)    log-scaled targets
-        Y_raw : (N,)    raw FRP targets
-        W     : (N,)    sample weights
+        X     : np.ndarray (N, T, F) – input feature windows
+        Y_log : np.ndarray (N,)      – log-transformed FRP targets
+        Y_raw : np.ndarray (N,)      – raw FRP targets
+        W     : np.ndarray (N,)      – per-sample weights
         """
         self.X     = torch.from_numpy(X.astype(np.float32))
         self.Y_log = torch.from_numpy(Y_log.astype(np.float32))
@@ -34,27 +33,28 @@ class FireDataset(Dataset):
         return len(self.X)
 
     def __getitem__(self, idx):
+        # returns (features, log-target, raw-target, weight)
         return self.X[idx], self.Y_log[idx], self.Y_raw[idx], self.W[idx]
 
 
-# ─── Scaled Dot-Product Multi-Head Self-Attention ────────────────────────────
+# ─── Standard scaled dot-product multi-head self-attention ────────────────
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, dim, heads=4):
         super().__init__()
-        assert dim % heads == 0, "Embedding dim must divide by number of heads"
+        assert dim % heads == 0, "Embedding dim must divide by heads"
         self.heads = heads
         self.dk    = dim // heads
         self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
         self.unify  = nn.Linear(dim, dim)
 
     def forward(self, x):
-        # x: [B, T, D]
+        # x: [batch, time, dim]
         B, T, D = x.size()
         qkv = self.to_qkv(x).chunk(3, dim=-1)
         qs, ks, vs = [
             t.view(B, T, self.heads, self.dk).transpose(1, 2)
             for t in qkv
-        ]
+        ]  # each: [B, heads, T, dk]
         scores = torch.matmul(qs, ks.transpose(-2, -1)) / np.sqrt(self.dk)
         attn   = torch.softmax(scores, dim=-1)
         out    = torch.matmul(attn, vs) \
@@ -64,26 +64,26 @@ class MultiHeadSelfAttention(nn.Module):
         return self.unify(out)
 
 
-# ─── Improved Fire Model ────────────────────────────────────────────────────
+# ─── Improved Fire Model: CNN → 3×BiLSTM → Attention → Deep FFN ───────────
 class ImprovedFireModel(nn.Module):
     def __init__(self, feat_dim, hid_dim=128, lstm_layers=3, heads=4, dropout=0.3):
         super().__init__()
-        # 1D CNN
+        # 1D CNN for local temporal patterns
         self.cnn = nn.Sequential(
-            nn.Conv1d(feat_dim, hid_dim, 3, padding=1),
+            nn.Conv1d(feat_dim, hid_dim, kernel_size=3, padding=1),
             nn.ReLU(),
-            nn.Conv1d(hid_dim, hid_dim, 3, padding=1),
+            nn.Conv1d(hid_dim, hid_dim, kernel_size=3, padding=1),
             nn.ReLU()
         )
-        # 3-layer BiLSTM
+        # Three-layer bidirectional LSTM
         self.lstm = nn.LSTM(
             hid_dim, hid_dim, lstm_layers,
             batch_first=True, bidirectional=True, dropout=dropout
         )
-        # Attention + normalization
+        # Self-attention + normalization
         self.attn = MultiHeadSelfAttention(hid_dim * 2, heads=heads)
         self.norm = nn.LayerNorm(hid_dim * 2)
-        # Deep FFN
+        # Deep feed-forward net
         self.ffn = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(hid_dim * 2, hid_dim),
@@ -94,17 +94,16 @@ class ImprovedFireModel(nn.Module):
         )
 
     def forward(self, x):
-        # x: [B, T, F]
-        c, _ = self.cnn(x.transpose(1, 2)), x.size()
-        c = c.transpose(1, 2)                           # [B, T, 2H]
-        lstm_out, _ = self.lstm(c)                     # [B, T, 2H]
-        attn_out    = self.attn(lstm_out)              # [B, T, 2H]
-        last        = lstm_out[:, -1, :] + attn_out[:, -1, :]
-        h           = self.norm(last)                  # [B, 2H]
-        return self.ffn(h).squeeze(-1)                  # [B]
+        # x: [batch, time, features]
+        c         = self.cnn(x.transpose(1, 2)).transpose(1, 2)  # → [B, T, 2H]
+        lstm_out, _ = self.lstm(c)                              # → [B, T, 2H]
+        attn_out   = self.attn(lstm_out)                        # → [B, T, 2H]
+        last       = lstm_out[:, -1, :] + attn_out[:, -1, :]    # residual sum
+        h          = self.norm(last)                            # → [B, 2H]
+        return self.ffn(h).squeeze(-1)                          # → [B]
 
 
-# ─── Extreme Loss: double‐penalises large errors ─────────────────────────────
+# ─── ExtremeLoss: double‐penalises errors above a threshold ────────────────
 class ExtremeLoss(nn.Module):
     def __init__(self, base_loss=nn.L1Loss(reduction='none'), thr=0.05):
         super().__init__()
@@ -117,32 +116,28 @@ class ExtremeLoss(nn.Module):
         return ((1 + mask) * err * weight).mean()
 
 
-# ─── Utility: make train/val loaders ────────────────────────────────────────
+# ─── Utility to create train/validation loaders ────────────────────────────
 def make_loaders(X, Yl, Yr, W, split=0.8, batch_size=32):
     ds      = FireDataset(X, Yl, Yr, W)
     n_train = int(len(ds) * split)
     train_ds, val_ds = random_split(ds, [n_train, len(ds) - n_train])
-    return (
-        DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory=True),
-        DataLoader(val_ds,   batch_size=batch_size, shuffle=False, pin_memory=True),
-        train_ds, val_ds
-    )
+    tr_ld   = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  pin_memory=True)
+    va_ld   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, pin_memory=True)
+    return tr_ld, va_ld, train_ds, val_ds
 
 
-# ─── Main training & eval function ─────────────────────────────────────────
+# ─── Main training & evaluation routine ────────────────────────────────────
 def main(dynamic_split=False):
-    # Choose device
+    # pick CUDA if available
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     if device.type == 'cuda':
         torch.backends.cudnn.benchmark = True
 
-    # ─── 1. Load & aggregate CSVs ─────────────────────────────────────────────
+    # 1. load & aggregate raw CSVs
     files = sorted(glob.glob('datasets/modis_????_Australia.csv'))
-    df    = pd.concat(
-        [pd.read_csv(f, parse_dates=['acq_date']) for f in files],
-        ignore_index=True
-    )
+    df    = pd.concat([pd.read_csv(f, parse_dates=['acq_date']) for f in files],
+                      ignore_index=True)
     df['acq_min'] = (df['acq_time'] // 100) * 60 + (df['acq_time'] % 100)
     df['date']    = df['acq_date'].dt.floor('D')
 
@@ -167,23 +162,21 @@ def main(dynamic_split=False):
         instrument_count = pd.NamedAgg('instrument', 'count'),
         version_count    = pd.NamedAgg('version',    'count'),
         daynight_count   = pd.NamedAgg('daynight',   'count'),
-        type_count       = pd.NamedAgg('type',       'count'),
+        type_count       = pd.NamedAgg('type',       'count')
     )
 
     full_idx = pd.date_range(daily.index.min(), daily.index.max(), freq='D')
     daily    = daily.reindex(full_idx, fill_value=0).rename_axis('date').reset_index()
 
-    # ─── 2. Prepare features & labels ────────────────────────────────────────
+    # 2. prepare features & sliding windows
     daily['frp_log'] = np.log1p(daily['frp_sum'])
     feats           = [c for c in daily.columns if c not in ('date','frp_sum','frp_log')]
+    scaler_X        = MinMaxScaler()
+    scaler_y        = MinMaxScaler()
+    X_all           = scaler_X.fit_transform(daily[feats]).astype(np.float32)
+    y_log           = scaler_y.fit_transform(daily[['frp_log']]).flatten().astype(np.float32)
+    y_raw           = daily['frp_sum'].to_numpy(dtype=np.float32)
 
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
-    X_all    = scaler_X.fit_transform(daily[feats]).astype(np.float32)
-    y_log    = scaler_y.fit_transform(daily[['frp_log']]).flatten().astype(np.float32)
-    y_raw    = daily['frp_sum'].to_numpy(dtype=np.float32)
-
-    # Build sliding windows (T=30)
     T, X, Yl, Yr = 30, [], [], []
     for i in range(len(X_all) - T):
         X.append(X_all[i:i+T])
@@ -191,34 +184,32 @@ def main(dynamic_split=False):
         Yr.append(y_raw[i+T])
     X, Yl, Yr = map(np.stack, (X, Yl, Yr))
 
-    # Weights normalised to mean=1
-    p90     = np.percentile(y_raw, 90)
-    W       = ((y_raw > p90) * 0.5 + 1.0).astype(np.float32)
+    # normalise weights to mean=1
+    p90   = np.percentile(y_raw, 90)
+    W     = ((y_raw > p90) * 0.5 + 1.0).astype(np.float32)
 
-    # ─── 3. Initialise model, loss & optimiser ───────────────────────────────
+    # 3. init model / loss / optimiser / scheduler
     model     = ImprovedFireModel(len(feats)).to(device)
     criterion = ExtremeLoss(thr=0.05)
     optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=1e-2, total_steps=500 * ((len(X)//32) + 1)
-    )
+    total_steps= 500 * ((len(X) // 32) + 1)
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-2, total_steps=total_steps)
 
-    # Initial split
     tr_ld, va_ld, tr_ds, va_ds = make_loaders(X, Yl, Yr, W)
 
-    # ─── 4. Training loop ─────────────────────────────────────────────────────
-    history    = {'train':[], 'val':[], 'comb':[]}
-    best_score = float('inf')
-    best_ep    = 0
-    wait       = 0
-    EPOCHS     = 500
-    PATIENCE   = 50
-    MIN_DELTA  = 10.0
-    eps_abs    = 500.0
-    eps_rel    = 0.266
+    # 4. training loop with multi-criteria early-stopping
+    history     = {'train':[], 'val':[], 'comb':[]}
+    best_comb   = float('inf')
+    best_r2     = -float('inf')
+    best_accrel = -float('inf')
+    best_ep     = 0
+    wait        = 0
+    EPOCHS      = 500
+    PATIENCE    = 50
+    MIN_DELTA   = 10.0
+    eps_rel     = 0.266
 
     for ep in range(1, EPOCHS+1):
-        # optional re-split
         if dynamic_split:
             tr_ld, va_ld, tr_ds, va_ds = make_loaders(X, Yl, Yr, W)
 
@@ -246,44 +237,45 @@ def main(dynamic_split=False):
         va_loss /= len(va_ds)
         history['val'].append(va_loss)
 
-        # Concatenate and inverse-transform
-        preds_concat = np.concatenate(all_p).reshape(-1,1)
-        frp_preds    = np.expm1(scaler_y.inverse_transform(preds_concat)).flatten()
-        # Clip negatives only
-        frp_preds    = np.clip(frp_preds, 0, None)
-        truths       = np.concatenate(all_t)
+        # invert log-scale, clip negatives only
+        preds = np.expm1(scaler_y.inverse_transform(np.concatenate(all_p).reshape(-1,1))).flatten()
+        preds = np.clip(preds, 0, None)
+        truths= np.concatenate(all_t)
 
-        # Regression metrics
-        mae   = mean_absolute_error(truths, frp_preds)
-        rmse  = np.sqrt(mean_squared_error(truths, frp_preds))
-        r2    = r2_score(truths, frp_preds)
-
-        # Accuracy/precision @ abs tolerance
-        corr_abs = np.abs(frp_preds - truths) <= eps_abs
-        acc_abs  = accuracy_score(corr_abs, np.ones_like(corr_abs))
-        prec_abs = precision_score(corr_abs, np.ones_like(corr_abs), zero_division=0)
-        # Accuracy/precision @ rel tolerance
-        frac_err = np.abs(frp_preds - truths) / np.where(truths>0, truths, 1.0)
+        # compute metrics
+        mae   = mean_absolute_error(truths, preds)
+        rmse  = np.sqrt(mean_squared_error(truths, preds))
+        r2    = r2_score(truths, preds)
+        frac_err = np.abs(preds - truths) / np.where(truths>0, truths, 1.0)
         corr_rel = frac_err <= eps_rel
         acc_rel  = accuracy_score(corr_rel, np.ones_like(corr_rel))
         prec_rel = precision_score(corr_rel, np.ones_like(corr_rel), zero_division=0)
 
-        # Combined metric
+        # combined loss metric (smoothed)
         comb_val = mae + 0.1 * rmse
         history['comb'].append(comb_val)
         comb_sm  = np.mean(history['comb'][-5:]) if len(history['comb'])>=5 else comb_val
 
+        # log epoch summary
         print(
             f"Epoch {ep}/{EPOCHS} | Tr {tr_loss:.4f} Va {va_loss:.4f} | "
             f"MAE {mae:.1f} RMSE {rmse:.1f} R² {r2:.3f} | "
-            f"Acc@±{int(eps_abs)} {acc_abs:.3f} Prec@±{int(eps_abs)} {prec_abs:.3f} | "
             f"Acc_rel@{eps_rel:.3f} {acc_rel:.3f} Prec_rel@{prec_rel:.3f} | "
             f"Comb_sm {comb_sm:.2f}"
         )
 
-        # Early-stopping
-        if comb_sm < best_score - MIN_DELTA:
-            best_score, best_ep, wait = comb_sm, ep, 0
+        # multi-criteria improvement check
+        improved = False
+        if comb_sm < best_comb - MIN_DELTA:
+            best_comb = comb_sm; improved = True
+        if r2 > best_r2 + 1e-3:
+            best_r2 = r2; improved = True
+        if acc_rel > best_accrel + 1e-3:
+            best_accrel = acc_rel; improved = True
+
+        if improved:
+            best_ep = ep
+            wait    = 0
             torch.save(model.state_dict(), 'best_model.pth')
         else:
             wait += 1
@@ -291,9 +283,10 @@ def main(dynamic_split=False):
                 print(f"Early stopping at epoch {ep} – no real improvement in last {PATIENCE} epochs")
                 break
 
-    print(f"\nBest model saved at epoch {best_ep} with Comb_sm {best_score:.2f}")
+    # final report
+    print(f"\nBest model at epoch {best_ep}  Comb_sm {best_comb:.2f}  R² {best_r2:.3f}  Acc_rel {best_accrel:.3f}")
 
-    # ─── 5. Plot loss curves ─────────────────────────────────────────────────
+    # 5. plot loss curves
     ep_range = range(1, len(history['train'])+1)
     plt.figure(figsize=(8,4))
     plt.plot(ep_range, history['train'], label='Train Loss')
@@ -305,5 +298,5 @@ def main(dynamic_split=False):
 
 
 if __name__ == "__main__":
-    # Set dynamic_split=True to reshuffle train/val each epoch
+    # set dynamic_split=True to reshuffle train/val each epoch
     main(dynamic_split=False)
