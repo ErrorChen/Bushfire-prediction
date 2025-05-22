@@ -146,7 +146,7 @@ def make_loaders(X, Yl, Yr, W,
 
 
 # ─── Main Training Loop ───────────────────────────────────────────────────
-def main(dynamic_split=True):
+def main(dynamic_split=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     if device.type == 'cuda':
