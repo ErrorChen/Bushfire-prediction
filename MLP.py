@@ -24,6 +24,7 @@ from sklearn.metrics import mean_absolute_error
 # -----------------------------
 # 1. Load & Preprocess Data
 # -----------------------------
+
 def load_and_preprocess():
     """
     Reads all MODIS CSVs, engineers features from date/time and categoricals,
@@ -146,7 +147,8 @@ def main():
     best_val_mae = float('inf')
     best_path    = 'best_frp_model.pt'
 
-    for epoch in range(1, 101):
+    # Modified epoch range: 1-12
+    for epoch in range(1, 12):
         # Training
         model.train()
         train_loss = 0.0
