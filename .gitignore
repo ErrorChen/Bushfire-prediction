@@ -3,3 +3,5 @@ best_frp_model.pt
 *.csv
 *.csv
 *.csv
+modis_mlp_frp_results.csv
+datasets/modis_mlp_frp_results.csv
