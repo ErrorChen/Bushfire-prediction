@@ -1,6 +1,3 @@
-已思考 6 秒
-
-```
 # Bushfire-prediction
 
 Bushfire-prediction is an ENGG2112 project that develops, trains and benchmarks two neural architectures—an MLP classifier and a complete LSTM sequence model—alongside a baseline MODIS-FRP model, to forecast daily bushfire risk across Australia (2013–2022). It integrates rainfall, fire-incident and satellite FRP datasets, preprocesses them, trains each model, evaluates performance with classification and regression metrics, and saves the best-performing weights.
@@ -171,4 +168,3 @@ This project is licensed under the MIT License. See `LICENSE`.
 - **Data providers**: Australian Bureau of Meteorology, NASA MODIS, Kaggle.  
 - **Course**: ENGG2112, The University of Sydney.  
 - **Libraries**: scikit-learn, pandas, PyTorch.
-```
