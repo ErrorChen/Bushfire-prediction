@@ -1,170 +1,162 @@
 # Bushfire-prediction
 
-Bushfire-prediction is an ENGG2112 project that develops, trains and benchmarks two neural architectures—an MLP classifier and a complete LSTM sequence model—alongside a baseline MODIS-FRP model, to forecast daily bushfire risk across Australia (2013–2022). It integrates rainfall, fire-incident and satellite FRP datasets, preprocesses them, trains each model, evaluates performance with classification and regression metrics, and saves the best-performing weights.
+This repository provides two PyTorch-based models to predict daily Fire Radiative Power (FRP) from MODIS satellite data over Australia:
 
-## Table of Contents
+- **DeepFRPNet (MLP)**: a deep feed-forward regression network  
+- **ImprovedFireModel (LSTM + CNN + Self-Attention)**: a sequence model with 30-day sliding windows  
 
-1. [Project Overview](#project-overview)  
-2. [Features](#features)  
-3. [Getting Started](#getting-started)  
-   - [Prerequisites](#prerequisites)  
-   - [Installation](#installation)  
-4. [Data](#data)  
-5. [Usage](#usage)  
-6. [Modelling](#modelling)  
-   - [Baseline MODIS-FRP Model](#baseline-modis-frp-model)  
-   - [MLP Classifier](#mlp-classifier)  
-   - [LSTM Network](#lstm-network)  
-7. [Evaluation & Results](#evaluation--results)  
-8. [Project Structure](#project-structure)  
-9. [Contributing](#contributing)  
-10. [License](#license)  
-11. [Acknowledgements](#acknowledgements)  
+It also includes scripts for training, inference and summarising performance.
 
-## Project Overview
+---
 
-We assemble three complementary data sources—daily rainfall, fire-incident attributes and MODIS Fire Radiative Power (FRP)—to create a unified feature set for binary bushfire-risk classification (“High” vs “Low”) at daily resolution. Three models are implemented:
-
-- **MODIS-FRP baseline**: Simple threshold or regression on satellite FRP data.  
-- **MLP Classifier**: Feed-forward network on aggregated features.  
-- **LSTM Network**: Sequence model capturing temporal patterns in rainfall and FRP.
-
-## Features
-
-- **Data Integration**:  
-  - `datasets/rainfall.csv` (daily rainfall, mm)  
-  - `datasets/fire_for16-21_attributes.csv` (fire area, duration, location)  
-  - `datasets/modis_YYYY_Australia.csv` (2013–2022 FRP time-series)  
-- **Preprocessing**: Imputation of missing values, feature scaling, one-hot encoding.  
-- **Models**:  
-  - Baseline MODIS-FRP (simple regression/classification).  
-  - MLP with configurable hidden layers and early stopping.  
-  - LSTM with sliding windows, dropout and checkpointing.  
-- **Evaluation**: Classification metrics (precision, recall, F1, accuracy) and regression metrics (MAE, RMSE, R²).  
-- **Persistence**: Best weights saved as `best_model.pth` (MLP), `best_lstm_model.pt` (LSTM) and `best_frp_model.pt` (MODIS-FRP).
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.8 or newer  
-- `pip`
-
-### Installation
-
-```bash
-git clone https://github.com/ErrorChen/Bushfire-prediction.git
-cd Bushfire-prediction
-pip install -r requirements.txt
-```
-
-## Data
-
-Place the following files in the `datasets/` directory:
-
-```text
-fire_for16-21_attributes.csv     # Historical bushfire incidents (2016–2021)
-rainfall.csv                     # Daily rainfall measurements (2016–2021)
-modis_2013_Australia.csv         # Satellite FRP data (2013)
-modis_2014_Australia.csv         # … through to 2022
-…
-modis_2022_Australia.csv
-```
-
-## Usage
-
-1. Update file paths in `MLP.py`, `LSTM.py` and `MODIS_FRP_baseline.py` if necessary.  
-2. Run each model:
-
-   ```bash
-   python MODIS_FRP_baseline.py    # trains/evaluates FRP baseline
-   python MLP.py                   # trains/evaluates MLP
-   python LSTM.py                  # trains/evaluates LSTM
-   ```
-
-3. Review console outputs and saved weight files.
-
-## Modelling
-
-### Baseline MODIS-FRP Model
-
-- Loads per-year FRP CSVs, aggregates daily FRP.  
-- Fits a simple regressor/classifier to predict risk.
-
-### MLP Classifier
-
-Defined in `MLP.py`:
-
-```python
-from sklearn.neural_network import MLPClassifier
-
-mlp = MLPClassifier(
-    hidden_layer_sizes=(100, 50),
-    activation='relu',
-    solver='adam',
-    alpha=1e-4,
-    learning_rate_init=1e-3,
-    max_iter=200,
-    early_stopping=True,
-    random_state=42
-)
-```
-
-### LSTM Network
-
-Implemented in `LSTM.py` with PyTorch:
-
-- **Input**: Sliding window of past _n_ days’ rainfall + FRP features.  
-- **Architecture**: 2-layer LSTM → Dropout → Dense → Sigmoid.  
-- **Loss**: Binary cross-entropy; **Optimiser**: Adam.  
-- **Checkpoint**: Saves `best_lstm_model.pt` at lowest validation loss.
-
-## Evaluation & Results
-
-- **MODIS-FRP**: Baseline performance logged to `model_comparison_summary.csv`.  
-- **MLP**:  
-  - Classification report (precision, recall, F1, support) printed.  
-  - Overall accuracy: ~80–85%.  
-- **LSTM**:  
-  - Best epoch: MAE = *XX*, RMSE = *YY*, R² = *ZZ*, Accuracy ≥ 82%.  
-
-## Project Structure
+## 📁 Repository Structure
 
 ```
 Bushfire-prediction/
-├── .venv/
-├── .vscode/
-├── datasets/
-│   ├── fire_for16-21_attributes.csv
-│   ├── rainfall.csv
-│   ├── modis_2013_Australia.csv
-│   ├── … 
-│   └── modis_2022_Australia.csv
-├── best_frp_model.pt
-├── best_model.pth
-├── best_lstm_model.pt
-├── LICENSE
-├── LSTM.py
-├── MLP.py
-├── MODIS_FRP_baseline.py
-├── model_comparison_summary.csv
-├── proj.code-workspace
-└── README.md
+├── datasets/                      # MODIS CSV files: modis_YYYY_Australia.csv
+├── LSTM.py                        # Train ImprovedFireModel (CNN + biLSTM + attention) 
+├── MLP.py                         # Train DeepFRPNet MLP model 
+├── apply_lstm_modis1.py          # Inference script for LSTM model 
+├── apply_mlp_modis1.py           # Inference script for MLP model 
+├── apply_summary1.py             # Compute & save combined metrics 
+├── best_model.pth                # Checkpoint of best LSTM model
+├── best_frp_model.pt             # Checkpoint of best MLP model
+├── model_comparison_summary.csv  # Summary of regression & classification metrics
+├── LICENSE                        # MIT License
+└── proj.code-workspace           # VS Code workspace settings
 ```
 
-## Contributing
+---
 
-1. Fork & clone the repo.  
-2. Create a feature branch: `git checkout -b feature/…`.  
-3. Commit your changes.  
-4. Push & open a Pull Request.
+## 🛠 Installation
 
-## License
+1. **Clone the repo**  
+   ```bash
+   git clone https://github.com/ErrorChen/Bushfire-prediction.git
+   cd Bushfire-prediction
+   ```
 
-This project is licensed under the MIT License. See `LICENSE`.
+2. **(Optional) Create a virtual environment**  
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate   # Windows: venv\Scripts\activate
+   ```
 
-## Acknowledgements
+3. **Install dependencies**  
+   ```bash
+   pip install numpy pandas scikit-learn torch matplotlib
+   ```
 
-- **Data providers**: Australian Bureau of Meteorology, NASA MODIS, Kaggle.  
-- **Course**: ENGG2112, The University of Sydney.  
-- **Libraries**: scikit-learn, pandas, PyTorch.
+---
+
+## 📦 Data Preparation
+
+Place your daily MODIS data CSVs in the `datasets/` folder, named exactly as:
+```
+datasets/modis_YYYY_Australia.csv
+```
+where `YYYY` is a four-digit year.  
+- **LSTM.py** aggregates these files via `glob('datasets/modis_????_Australia.csv')`   
+- **MLP.py** uses `glob('datasets/modis_*.csv')`   
+
+Each CSV must include at least:
+```
+acq_date, acq_time, latitude, longitude,
+brightness, bright_t31, scan, track,
+confidence, frp, satellite, instrument,
+daynight, type, version
+```
+
+---
+
+## ⚙️ Model Training
+
+### 1. Train the MLP (DeepFRPNet)
+
+```bash
+python MLP.py
+```
+
+- Loads & preprocesses all `datasets/modis_*.csv`   
+- Splits into train/val/test  
+- Trains with mixed precision & early stopping  
+- Saves best weights to `best_frp_model.pt`
+
+### 2. Train the LSTM-based model (ImprovedFireModel)
+
+```bash
+python LSTM.py
+```
+
+- Aggregates daily summaries with a 30-day lookback window   
+- Trains CNN→biLSTM→Self-Attention network  
+- Saves best weights to `best_model.pth`
+
+---
+
+## 🚀 Inference
+
+### MLP Inference
+
+```bash
+python apply_mlp_modis1.py
+```
+
+- Loads `best_frp_model.pt` and all `datasets/modis_*.csv`  
+- Outputs `modis_mlp_frp_results.csv` with true vs predicted FRP 
+
+### LSTM Inference
+
+```bash
+python apply_lstm_modis1.py
+```
+
+- Loads `best_model.pth` and all `datasets/modis_YYYY_Australia.csv`  
+- Outputs `modis_lstm_frp_results.csv` with true vs predicted FRP 
+
+---
+
+## 📊 Metrics Summary
+
+Combine regression & classification metrics for both models:
+
+```bash
+python apply_summary1.py
+```
+
+- Reads `modis_mlp_frp_results.csv` & `modis_lstm_frp_results.csv`  
+- Computes MAE, RMSE, R², plus binary metrics via thresholding  
+- Writes `model_comparison_summary.csv` 
+
+Example of `model_comparison_summary.csv`:
+
+| model            | metric   | value  |
+| :--------------- | :------- | :----- |
+| MLP_regression   | MAE      | 12.345 |
+| MLP_regression   | RMSE     | 23.456 |
+| LSTM_regression  | MAE      | 10.123 |
+| LSTM_regression  | R²       | 0.789  |
+| ...              | ...      | ...    |
+
+---
+
+## 🤝 Contributing
+
+1. Fork this repo  
+2. Create a feature branch:  
+   ```bash
+   git checkout -b feature/your-feature
+   ```  
+3. Commit your changes:  
+   ```bash
+   git commit -m "Add awesome feature"
+   ```  
+4. Push and open a Pull Request  
+
+Please include tests and update this README as needed.
+
+---
+
+## 📜 License
+
+This project is licensed under the MIT License. See `LICENSE` for details.
