@@ -24,6 +24,10 @@ from sklearn.metrics import mean_absolute_error
 # -----------------------------
 # 1. Load & Preprocess Data
 # -----------------------------
+<<<<<<< HEAD
+=======
+
+>>>>>>> ee79ad07286ecf2a56155654899baee6d74507e1
 def load_and_preprocess():
     """
     Reads all MODIS CSVs, engineers features from date/time and categoricals,
@@ -146,7 +150,12 @@ def main():
     best_val_mae = float('inf')
     best_path    = 'best_frp_model.pt'
 
+<<<<<<< HEAD
     for epoch in range(1, 101):
+=======
+    # Modified epoch range: 1-12
+    for epoch in range(1, 12):
+>>>>>>> ee79ad07286ecf2a56155654899baee6d74507e1
         # Training
         model.train()
         train_loss = 0.0
@@ -199,4 +208,8 @@ def main():
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
+<<<<<<< HEAD
     main()
+=======
+    main()
+>>>>>>> ee79ad07286ecf2a56155654899baee6d74507e1
