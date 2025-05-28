@@ -21,7 +21,6 @@ Bushfire-prediction/
 ├── apply_summary1.py             # Compute & save combined metrics 
 ├── best_model.pth                # Checkpoint of best LSTM model
 ├── best_frp_model.pt             # Checkpoint of best MLP model
-├── model_comparison_summary.csv  # Summary of regression & classification metrics
 ├── LICENSE                        # MIT License
 └── proj.code-workspace           # VS Code workspace settings
 ```
