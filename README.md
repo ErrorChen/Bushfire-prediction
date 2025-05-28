@@ -116,30 +116,6 @@ python apply_lstm_modis1.py
 
 ---
 
-## 📊 Metrics Summary
-
-Combine regression & classification metrics for both models:
-
-```bash
-python apply_summary1.py
-```
-
-- Reads `modis_mlp_frp_results.csv` & `modis_lstm_frp_results.csv`  
-- Computes MAE, RMSE, R², plus binary metrics via thresholding  
-- Writes `model_comparison_summary.csv` 
-
-Example of `model_comparison_summary.csv`:
-
-| model            | metric   | value  |
-| :--------------- | :------- | :----- |
-| MLP_regression   | MAE      | 12.345 |
-| MLP_regression   | RMSE     | 23.456 |
-| LSTM_regression  | MAE      | 10.123 |
-| LSTM_regression  | R²       | 0.789  |
-| ...              | ...      | ...    |
-
----
-
 ## 🤝 Contributing
 
 1. Fork this repo  
