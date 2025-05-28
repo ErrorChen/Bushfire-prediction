@@ -44,7 +44,8 @@ Bushfire-prediction/
 
 3. **Install dependencies**  
    ```bash
-   pip install numpy pandas scikit-learn torch matplotlib
+   pip install numpy pandas scikit-learn matplotlib
+   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
    ```
 
 ---
